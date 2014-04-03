@@ -20,7 +20,7 @@
     
 -define(IBROWSE_OPTIONS, [
     {max_sessions, 99999},
-    {response_format, binary},
+    {response_format, list},
     {max_pipeline_size, 1},
     {ssl_options, [{reuse_sessions, true}, {verify, verify_none}]},
     {connect_timeout, 20000},
