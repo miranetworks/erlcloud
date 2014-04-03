@@ -17,6 +17,16 @@
          security_token=undefined :: string(),
          expiration_gregorian_seconds :: integer()
         }).
+    
+-define(IBROWSE_OPTIONS, [
+    {max_sessions, 99999},
+    {response_format, binary},
+    {max_pipeline_size, 1},
+    {ssl_options, [{reuse_sessions, true}, {verify, verify_none}]},
+    {connect_timeout, 20000},
+    {inactivity_timeout, 20000}
+]).
+    
 
 aws_request_xml(Method, Host, Path, Params, #aws_config{} = Config) ->
     Body = aws_request(Method, Host, Path, Params, Config),
@@ -83,32 +93,38 @@ aws_request2_no_update(Method, Protocol, Host, Port, Path, Params, #aws_config{}
     Signature = base64:encode(crypto:sha_mac(Config#aws_config.secret_access_key, RequestToSign)),
     
     Query = [QueryToSign, "&Signature=", erlcloud_http:url_encode(Signature)],
-    
+   
+    UProtocol = 
     case Protocol of
-        undefined -> UProtocol = "https://";
-        _ -> UProtocol = [Protocol, "://"]
+        undefined -> "https://";
+        _ -> [Protocol, "://"]
     end,
-    
+   
+    URL = 
     case Port of
-        undefined -> URL = [UProtocol, Host, Path];
-        _ -> URL = [UProtocol, Host, $:, port_to_str(Port), Path]
+        undefined -> [UProtocol, Host, Path];
+        _ -> [UProtocol, Host, $:, port_to_str(Port), Path]
     end,
-    
+
     %% Note: httpc MUST be used with {timeout, timeout()} option
     %%       Many timeout related failures is observed at prod env
     %%       when library is used in 24/7 manner
-    Response =
+    IbrowseResponse =
         case Method of
             get ->
                 Req = lists:flatten([URL, $?, Query]),
-                httpc:request(get, {Req, []}, [{timeout, Config#aws_config.timeout}], []);
+%                httpc:request(get, {Req, []}, [{timeout, Config#aws_config.timeout}], []);
+                ibrowse:send_req(Req, [], get, [], ?IBROWSE_OPTIONS, Config#aws_config.timeout);
             _ ->
-                httpc:request(Method,
-                              {lists:flatten(URL), [], "application/x-www-form-urlencoded; charset=utf-8",
-                               list_to_binary(Query)}, [{timeout, Config#aws_config.timeout}], [])
+%                httpc:request(Method,
+%                              {lists:flatten(URL), [], "application/x-www-form-urlencoded; charset=utf-8",
+%                               list_to_binary(Query)}, [{timeout, Config#aws_config.timeout}], [])
+                 ibrowse:send_req(lists:flatten(URL), [{"Content-Type", "application/x-www-form-urlencoded; charset=utf-8"}], Method, Query, ?IBROWSE_OPTIONS, Config#aws_config.timeout)
         end,
+
+    HttpcResponse = map_ibrowse_to_httpc_response(IbrowseResponse),
     
-    http_body(Response).
+    http_body(HttpcResponse).
 
 param_list([], _Key) -> [];
 param_list(Values, Key) when is_tuple(Key) ->
@@ -190,14 +206,17 @@ timestamp_to_gregorian_seconds(Timestamp) ->
 get_credentials_from_metadata() ->
     %% TODO this function should retry on errors getting credentials
     %% First get the list of roles
-    case http_body(httpc:request("http://169.254.169.254/latest/meta-data/iam/security-credentials/")) of
+    case http_body(map_ibrowse_to_httpc_response(
+                ibrowse:send_req("http://169.254.169.254/latest/meta-data/iam/security-credentials/", 
+                                 [], get, [], ?IBROWSE_OPTIONS))) of
         {error, Reason} ->
             {error, Reason};
         {ok, Body} ->
             %% Always use the first role
             Role = string:sub_word(Body, 1, $\n),
-            case http_body(httpc:request(
-                             "http://169.254.169.254/latest/meta-data/iam/security-credentials/" ++ Role)) of
+            case http_body(map_ibrowse_to_httpc_response(
+                        ibrowse:send_req("http://169.254.169.254/latest/meta-data/iam/security-credentials/" ++ Role,
+                                         [], get, [], ?IBROWSE_OPTIONS))) of
                 {error, Reason} ->
                     {error, Reason};
                 {ok, Json} ->
@@ -314,3 +333,25 @@ authorization(Config, CredentialScope, SignedHeaders, Signature) ->
      " Credential=", Config#aws_config.access_key_id, $/, CredentialScope, $,,
      " SignedHeaders=", SignedHeaders, $,,
      " Signature=", Signature].
+
+
+%%
+%% @private
+%% @doc Map ibrowse response to httpc-like response
+%%
+%%
+%% ibrowse: {ok, Status, ResponseHeaders, ResponseBody} | {error, Reason}
+%% httpc: {ok, {{_HTTPVer, OKStatus, _StatusLine}, Headers, Body}} | {error, Reason}
+%%
+
+-type ibrowse_response() :: {ok, Status::string(), ResponseHeaders::list(), ResponseBody::string()} | {error, Reason::term()}.
+-type httpc_response() :: {ok, {{_HTTPVer::string(), OKStatus::non_neg_integer(), StatusLine::string()}, Headers::list(), Body::string()}} | {error, Reason::term()}.
+
+-spec map_ibrowse_to_httpc_response(ibrowse_response()) -> httpc_response().
+
+map_ibrowse_to_httpc_response(Response) ->
+    case Response of
+        {ok, Status, ResponseHeaders, ResponseBody} when is_list(Status) ->
+            {ok, {{"HTTP/1.1", list_to_integer(Status), ""}, ResponseHeaders, ResponseBody}};
+        {error, _} = E -> E
+    end.

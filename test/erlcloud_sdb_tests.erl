@@ -5,18 +5,26 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+map_httpc_to_ibrowse_response(Response) ->
+    case Response of
+        {ok, {{_, Status, _}, ResponseHeaders, ResponseBody}} when is_integer(Status) ->
+            {ok, integer_to_list(Status), ResponseHeaders, ResponseBody};
+        {error, _} = E -> E
+    end.
+
+
 setup() ->
     erlcloud_sdb:configure("fake", "fake-secret"),
-    meck:new(httpc, [unstick]).
+    meck:new(ibrowse, [unstick]).
 
 cleanup(_) ->
-    meck:unload(httpc).
+    meck:unload(ibrowse).
 
 %% Helpers
 
 expect_chain([Response | Chain]) ->
-    meck:expect(httpc, request,
-                fun(_, _, _, _) ->
+    meck:expect(ibrowse, send_req,
+                fun(_, _, _, _, _, _) ->
                         expect_chain(Chain),
                         Response
                 end);
@@ -55,16 +63,16 @@ single_result_response() ->
     single_result_response("item0").
 
 single_result_response(Name) ->
-    {ok, {{0, 200, ""}, [], single_result_response_body(Name)}}.
+    map_httpc_to_ibrowse_response({ok, {{0, 200, ""}, [], single_result_response_body(Name)}}).
 
 only_token_response() ->
-    {ok, {{0, 200, ""}, [], only_token_response_body()}}.
+    map_httpc_to_ibrowse_response({ok, {{0, 200, ""}, [], only_token_response_body()}}).
 
 single_result_and_token_response() ->
-    {ok, {{0, 200, ""}, [], single_result_and_token_response_body()}}.
+    map_httpc_to_ibrowse_response({ok, {{0, 200, ""}, [], single_result_and_token_response_body()}}).
 
 unavailable_response() ->
-    {ok, {{0, 503, "Unavailable"}, [], ""}}.
+    map_httpc_to_ibrowse_response({ok, {{0, 503, "Unavailable"}, [], ""}}).
 
 %% Tests - select
 select_test_() ->
